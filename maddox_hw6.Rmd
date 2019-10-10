@@ -1,0 +1,171 @@
+---
+title: "Homework 6"
+author: "Jason Maddox"
+date: "5/2/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(plyr)
+library(tidyverse)
+library(magrittr)
+library(resample)
+```
+
+1. \textbf{Nonparametric Bootstrap CIs.}
+(a) Bootstrap interval.
+```{r}
+boot_pct_ci <- function(x, conf = .95, B = 1e3) { 
+  boot_means <- rerun(B, {
+    sample(x, length(x), replace = TRUE) %>% 
+    mean()
+  })
+  boot_means %>% 
+    flatten_dbl() %>% 
+    quantile(c((1 - conf) / 2, (1 + conf) / 2), names = FALSE)
+}
+set.seed(1)
+(data <- rnorm(20, mean = 5, sd = 3) %>% round(2))
+data %>% boot_pct_ci() %>% round(2)
+```
+
+(b) \textit{t}-interval.
+```{r}
+t_ci <- function(x, conf = .95) {
+  c(mean(x) + qt((1 - conf)/2, length(x) - 1)*sd(x)/sqrt(length(x)),
+    mean(x) - qt((1 - conf)/2, length(x) - 1)*sd(x)/sqrt(length(x)))
+}
+data %>% t_ci() %>% round(2)
+data %>% t.test() %>% pluck("conf.int") %>% round(2)
+```
+
+(c) Bias corrected and adjusted bootstrap interval.
+```{r}
+boot_bca_ci <- function(x, conf = .95, B = 1e4) {
+  bootstrap(x, mean, R = B) %>% 
+    CI.bca(probs = c((1 - conf)/2, (1 + conf)/2), names = FALSE) %>% as.vector()
+}
+data %>% boot_bca_ci() %>% round(2)
+```
+
+(d) Simulation study.
+```{r, cache = TRUE}
+cover <- function(method) {
+  ci <- rweibull(250, .2, 5) %>% method()
+  ci[1] < 600 & ci[2] > 600
+}
+covs <- rerun(10000, {
+  list(boot_pct_ci, t_ci, boot_bca_ci) %>% 
+    map(cover) %>% 
+    flatten_lgl()
+}) %>% ldply()
+covs %>% summarize(nonpar_btstrp = mean(V1), t = mean(V2), BCa = mean(V3))
+```
+
+2. \textbf{Parametric and Smooth Bootstrap.}
+(a) Kernel density estimate.
+```{r}
+kdefun <- function(x) {
+  kde <- (x %>% density())[c('x', 'y')] %>% transpose() %>% ldply(as_tibble)
+  approxfun(kde$x, kde$y, yleft = 0, yright = 0)
+}
+```
+
+(b) Plot kernel density estimate.
+```{r}
+ggplot(tibble(x = c(-4, 14)), aes(x)) +
+  stat_function(fun = kdefun(data))
+```
+
+(c) Integrate KDE.
+```{r}
+integrate(kdefun(data), -Inf, Inf)
+```
+
+(d) Empirical CDF.
+```{r}
+ecdf2 <- function(x) {
+  function(vals) {
+    vals %>% map_dbl(~ mean(.x >= x))
+  }
+}
+s <- seq(.5, 2.5, .5)
+ecdf(1:2)(s)
+ecdf2(1:2)(s)
+```
+
+(e) Smoothed empirical CDF.
+```{r}
+secdf <- function(x) {
+  function(vals) {
+    vals %>% map_dbl(~ integrate(kdefun(x), lower = -Inf, upper = .x)$value)
+  }
+}
+pnorm(-3:3) %>% round(4)
+secdf(rnorm(1e6))(-3:3) %>% round(4)
+```
+
+(f) Graph of CDFs.
+```{r, cache = TRUE}
+ggplot(tibble(x = c(-4, 14)), aes(x)) +
+  stat_function(fun = pnorm, 
+                args = list(mean = mean(data), sd = sd(data)), 
+                aes(color = "green3")) +
+  stat_function(fun = ecdf2(data), aes(color = "blue")) +
+  stat_function(fun = secdf(data), aes(color = "red")) +
+  scale_color_manual(name = "Estimated CDF", 
+                     values = c("red" = "red", 
+                                "blue" = "blue", 
+                                "green3" = "green3"),
+                     labels = c(expression(hat(F)[n](x)), 
+                                expression(hat(F)[hat(theta)](x)), 
+                                expression(hat(F)[S](x)))) +
+  ylab(expression(hat(F)(x)))
+```
+
+(g) Parametric bootstrap.
+```{r, cache = TRUE}
+boot_param_ci <- function(x, conf = .95, B = 1e3) {
+  boot_means <- rerun(B, {
+    rnorm(length(x), mean(x), sd(x)) %>%
+    mean()
+  })
+  boot_means %>% 
+    flatten_dbl() %>% 
+    quantile(c((1 - conf) / 2, (1 + conf) / 2), names = FALSE)
+}
+data %>% boot_param_ci() %>% round(2)
+```
+
+(h) Smooth bootstrap.
+```{r, cache = TRUE}
+boot_smooth_ci <- function(x, conf = .95, B = 1e3) { 
+  boot_means <- rerun(B, {
+    (sample(x, length(x), replace = TRUE) + rnorm(length(x), 0, bw.nrd0(x))) %>% 
+    mean()
+  })
+  boot_means %>% 
+    flatten_dbl() %>% 
+    quantile(c((1 - conf) / 2, (1 + conf) / 2), names = FALSE)
+}
+data %>% boot_smooth_ci() %>% round(2)
+```
+
+(i) Simulation study.
+```{r, cache = TRUE}
+covs <- rerun(10000, {
+  list(boot_pct_ci,
+       t_ci,
+       boot_bca_ci,
+       boot_param_ci,
+       boot_smooth_ci) %>% 
+    map(cover) %>% 
+    flatten_lgl()
+}) %>% ldply()
+covs %>% summarize(nonpar_btstrp = mean(V1), 
+                   t = mean(V2), 
+                   BCa = mean(V3),
+                   par_btstrp = mean(V4),
+                   smooth_btstrp = mean(V5))
+```
